@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D GLB 모델 뷰어</title>
+
+  <!-- Three.js ESM Import Map (CDN: jsDelivr) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <style>
+    :root {
+      --ui-bg: rgba(20, 23, 30, 0.78);
+      --ui-border: rgba(255, 255, 255, 0.14);
+      --ui-text: #f3f5f8;
+      --ui-muted: #9aa4b2;
+      --accent: #4f8cff;
+      --accent-hover: #6aa0ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      color: var(--ui-text);
+      background-color: #14171e;
+    }
+
+    /* 뷰어 컨테이너: 반응형 크기 및 모바일 터치 제스처 충돌 방지 */
+    .viewer-stage {
+      position: relative;
+      width: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      touch-action: none;
+      user-select: none;
+    }
+
+    /* 투명 배경 모드 확인용 체커보드 (실제 웹페이지 배경 위에 올릴 때는 이 배경 규칙을 제거하세요) */
+    .viewer-stage.is-transparent {
+      background-color: #1d212a;
+      background-image:
+        linear-gradient(45deg, #262b36 25%, transparent 25%),
+        linear-gradient(-45deg, #262b36 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #262b36 75%),
+        linear-gradient(-45deg, transparent 75%, #262b36 75%);
+      background-size: 24px 24px;
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+    }
+
+    #viewer-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      outline: none;
+    }
+
+    /* 드래그 앤 드롭 하이라이트 */
+    .drop-overlay {
+      position: absolute;
+      inset: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed var(--accent);
+      border-radius: 16px;
+      background: rgba(15, 23, 42, 0.72);
+      backdrop-filter: blur(8px);
+      font-size: 1.05rem;
+      font-weight: 600;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.18s ease;
+      z-index: 30;
+    }
+
+    .viewer-stage.is-dragover .drop-overlay {
+      opacity: 1;
+    }
+
+    /* 로딩 및 에러 오버레이 */
+    .status-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      background: rgba(16, 19, 25, 0.78);
+      backdrop-filter: blur(10px);
+      transition: opacity 0.28s ease, visibility 0.28s ease;
+      z-index: 20;
+      text-align: center;
+    }
+
+    .status-overlay.is-hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .spinner {
+      width: 42px;
+      height: 42px;
+      border: 3px solid rgba(255, 255, 255, 0.16);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.85s linear infinite;
+    }
+
+    .status-overlay.is-error .spinner {
+      display: none;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .status-title {
+      font-size: 0.98rem;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .status-detail {
+      font-size: 0.84rem;
+      color: var(--ui-muted);
+      max-width: 440px;
+      line-height: 1.5;
+      margin: 0;
+    }
+
+    .progress-track {
+      width: min(260px, 75vw);
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.14);
+      overflow: hidden;
+    }
+
+    .status-overlay.is-error .progress-track {
+      display: none;
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #7cc4ff);
+      border-radius: 999px;
+      transition: width 0.12s ease-out;
+    }
+
+    .progress-fill.is-indeterminate {
+      width: 40%;
+      animation: indeterminate 1.2s ease-in-out infinite;
+    }
+
+    @keyframes indeterminate {
+      0% { transform: translateX(-110%); }
+      100% { transform: translateX(280%); }
+    }
+
+    /* 하단 컨트롤 바 */
+    .toolbar {
+      position: absolute;
+      left: 50%;
+      bottom: 20px;
+      transform: translateX(-50%);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      max-width: calc(100% - 24px);
+      padding: 8px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--ui-border);
+      background: var(--ui-bg);
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+      z-index: 15;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid transparent;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--ui-text);
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 7px 12px;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    .btn.is-active {
+      background: rgba(79, 140, 255, 0.24);
+      border-color: rgba(79, 140, 255, 0.65);
+      color: #dbe8ff;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .color-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+
+    .color-control input[type="color"] {
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: none;
+      border-radius: 6px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .fov-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.08);
+      font-size: 0.8rem;
+      color: var(--ui-text);
+    }
+
+    .fov-control input[type="range"] {
+      width: 72px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .fov-value {
+      min-width: 32px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--ui-muted);
+    }
+
+    .hint-badge {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--ui-border);
+      background: var(--ui-bg);
+      backdrop-filter: blur(10px);
+      font-size: 0.76rem;
+      color: var(--ui-muted);
+      z-index: 15;
+      pointer-events: none;
+    }
+
+    .is-hidden-el {
+      display: none !important;
+    }
+
+    /* 1인칭 관전자 모드 중앙 조준점 */
+    .spectator-crosshair {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 6px;
+      height: 6px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      z-index: 14;
+    }
+
+    .viewer-stage.is-spectator .spectator-crosshair {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <main class="viewer-stage" id="viewer-stage">
+    <canvas id="viewer-canvas" aria-label="3D 모델 인터랙티브 뷰어"></canvas>
+    <div class="spectator-crosshair" aria-hidden="true"></div>
+
+    <div class="hint-badge" id="hint-badge">
+      좌클릭: 회전 · 우클릭: 이동(Pan) · 휠/핀치: 줌 · V: 관전자 모드 · .glb 드래그 앤 드롭 가능
+    </div>
+
+    <div class="drop-overlay" aria-hidden="true">
+      여기에 .glb 파일을 놓으면 즉시 미리볼 수 있습니다
+    </div>
+
+    <!-- 로딩 및 에러 상태 오버레이 -->
+    <div class="status-overlay" id="status-overlay" role="status" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="status-title" id="status-title">3D 모델 불러오는 중... 0%</p>
+      <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress-bar">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <p class="status-detail" id="status-detail">에셋 데이터를 준비하고 있습니다.</p>
+      <button type="button" class="btn btn-primary is-hidden-el" id="overlay-file-btn">
+        로컬 .glb 파일 직접 선택
+      </button>
+    </div>
+
+    <!-- 하단 컨트롤 바 -->
+    <div class="toolbar" aria-label="뷰어 제어 도구">
+      <button type="button" class="btn btn-primary" id="open-file-btn">.glb 열기</button>
+      <button type="button" class="btn" id="spectator-btn" title="1인칭 자유 이동 (단축키: V)">관전자 모드 (WASD)</button>
+      <button type="button" class="btn" id="reset-camera-btn" title="단축키: R">시점 초기화</button>
+      <button type="button" class="btn" id="autorotate-btn">자동 회전</button>
+      <button type="button" class="btn is-hidden-el" id="animation-btn">애니메이션 일시정지</button>
+      <button type="button" class="btn" id="transparent-btn">투명 배경</button>
+      <label class="color-control" title="배경색 변경">
+        <span>배경색</span>
+        <input type="color" id="bg-color-input" value="#1a1d24" aria-label="배경색 선택" />
+      </label>
+      <label class="fov-control" title="카메라 시야각(FOV) 조절">
+        <span>시야각</span>
+        <input type="range" id="fov-slider" min="40" max="100" step="1" value="60" aria-label="카메라 시야각 조절" />
+        <span class="fov-value" id="fov-value">60°</span>
+      </label>
+      <input type="file" id="file-input" accept=".glb,model/gltf-binary" hidden />
+    </div>
+  </main>
+
+  <!-- file:// 프로토콜로 직접 열었을 때 CORS 차단 안내 -->
+  <script>
+    if (window.location.protocol === 'file:') {
+      const overlay = document.getElementById('status-overlay');
+      const title = document.getElementById('status-title');
+      const detail = document.getElementById('status-detail');
+      overlay.classList.add('is-error');
+      title.textContent = '로컬 웹 서버에서 실행해야 합니다 (CORS 제한)';
+      detail.innerHTML =
+        '보안 정책상 <code>file://</code> 경로에서는 ES Module 및 <code>.glb</code> 로딩이 차단됩니다.<br />' +
+        '프로젝트 폴더에서 <code>python -m http.server 8000</code> 또는 VS Code Live Server를 실행한 뒤 ' +
+        '<code>http://localhost:8000</code>으로 접속해 주세요.';
+    }
+  </script>
+
+  <script type="module" src="./viewer.js"></script>
+</body>
+</html>
