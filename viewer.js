@@ -56,6 +56,17 @@ const dom = {
   fovSlider: document.getElementById('fov-slider'),
   fovValue: document.getElementById('fov-value'),
   hintBadge: document.getElementById('hint-badge'),
+  playlistToggleBtn: document.getElementById('playlist-toggle-btn'),
+  playlistPanel: document.getElementById('playlist-panel'),
+  playlistTitle: document.getElementById('playlist-title'),
+  playlistItems: document.getElementById('playlist-items'),
+  playlistAddBtn: document.getElementById('playlist-add-btn'),
+  playlistClearBtn: document.getElementById('playlist-clear-btn'),
+  prevModelBtn: document.getElementById('prev-model-btn'),
+  nextModelBtn: document.getElementById('next-model-btn'),
+  toolbarPrevBtn: document.getElementById('toolbar-prev-btn'),
+  toolbarNextBtn: document.getElementById('toolbar-next-btn'),
+  playlistCounter: document.getElementById('playlist-counter'),
 };
 
 const state = {
@@ -77,6 +88,10 @@ const state = {
   keysPressed: new Set(),
   isDraggingLook: false,
   lastPointer: { x: 0, y: 0 },
+  playlist: [], // { id, name, sizeBytes, file?, url? }
+  activePlaylistIndex: -1,
+  nextPlaylistId: 1,
+  isPlaylistOpen: false,
 };
 
 const _forwardVec = new THREE.Vector3();
@@ -116,10 +131,17 @@ async function init() {
   resizeObserver.observe(dom.stage);
 
   setupUI();
+  setupDesktopIntegration();
   renderer.setAnimationLoop(animate);
 
   const queryModel = new URLSearchParams(window.location.search).get('model');
-  loadGLB(queryModel || VIEWER_CONFIG.modelUrl);
+  if (queryModel) {
+    loadGLB(queryModel);
+  } else if (window.desktopAPI) {
+    showWelcomeState();
+  } else {
+    loadGLB(VIEWER_CONFIG.modelUrl);
+  }
 }
 
 function createRenderer(canvas) {
@@ -448,10 +470,25 @@ function hideStatusOverlay() {
   });
 }
 
-function showErrorState(label, error) {
+function showWelcomeState() {
   dom.statusOverlay.classList.remove('is-hidden');
   dom.statusOverlay.classList.add('is-error');
   dom.overlayFileBtn.classList.remove('is-hidden-el');
+  dom.overlayFileBtn.textContent = '여러 .glb 파일 선택';
+  dom.statusTitle.textContent = '3D GLB 뷰어 준비 완료';
+  dom.statusDetail.textContent =
+    '.glb 파일을 1개 또는 여러 개 선택하거나 화면에 드래그하면 목록에 추가되어 하나씩 넘겨볼 수 있습니다.';
+}
+
+function showErrorState(label, error) {
+  if (label === VIEWER_CONFIG.modelUrl && state.playlist.length === 0) {
+    showWelcomeState();
+    return;
+  }
+  dom.statusOverlay.classList.remove('is-hidden');
+  dom.statusOverlay.classList.add('is-error');
+  dom.overlayFileBtn.classList.remove('is-hidden-el');
+  dom.overlayFileBtn.textContent = '로컬 .glb 파일 직접 선택';
   dom.statusTitle.textContent = '모델 파일을 불러오지 못했습니다';
   dom.statusDetail.textContent =
     `경로(${label})를 확인하거나, 로컬 .glb 파일을 직접 선택·드래그해서 열어보세요. (${error?.message || '로드 오류'})`;
@@ -461,14 +498,15 @@ function setupUI() {
   const triggerFileSelect = () => dom.fileInput.click();
   dom.openFileBtn.addEventListener('click', triggerFileSelect);
   dom.overlayFileBtn.addEventListener('click', triggerFileSelect);
+  dom.playlistAddBtn.addEventListener('click', triggerFileSelect);
 
   dom.fileInput.addEventListener('change', (e) => {
-    const file = e.target.files?.[0];
-    if (file) loadLocalFile(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) addLocalFilesToPlaylist(files);
     e.target.value = '';
   });
 
-  // 드래그 앤 드롭으로 .glb 파일 즉시 테스트
+  // 드래그 앤 드롭으로 .glb 파일 여러 개 즉시 추가 및 미리보기
   dom.stage.addEventListener('dragover', (e) => {
     e.preventDefault();
     dom.stage.classList.add('is-dragover');
@@ -483,9 +521,21 @@ function setupUI() {
   dom.stage.addEventListener('drop', (e) => {
     e.preventDefault();
     dom.stage.classList.remove('is-dragover');
-    const file = e.dataTransfer?.files?.[0];
-    if (file) loadLocalFile(file);
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length > 0) addLocalFilesToPlaylist(files);
   });
+
+  dom.playlistToggleBtn.addEventListener('click', () => {
+    setPlaylistOpen(!state.isPlaylistOpen);
+  });
+
+  dom.playlistClearBtn.addEventListener('click', clearPlaylist);
+  dom.prevModelBtn.addEventListener('click', () => stepPlaylist(-1));
+  dom.nextModelBtn.addEventListener('click', () => stepPlaylist(1));
+  dom.toolbarPrevBtn.addEventListener('click', () => stepPlaylist(-1));
+  dom.toolbarNextBtn.addEventListener('click', () => stepPlaylist(1));
+
+  renderPlaylist();
 
   dom.spectatorBtn.addEventListener('click', () => {
     setCameraMode(state.cameraMode === 'orbit' ? 'spectator' : 'orbit');
@@ -537,13 +587,187 @@ function setupUI() {
   });
 }
 
-function loadLocalFile(file) {
-  if (!file.name.toLowerCase().endsWith('.glb')) {
-    showErrorState(file.name, new Error('.glb 파일만 지원합니다.'));
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '-';
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function setPlaylistOpen(isOpen) {
+  state.isPlaylistOpen = isOpen;
+  dom.playlistPanel.classList.toggle('is-collapsed', !isOpen);
+  dom.playlistToggleBtn.classList.toggle('is-active', isOpen);
+}
+
+function addLocalFilesToPlaylist(files) {
+  const validFiles = files
+    .filter((file) => file.name.toLowerCase().endsWith('.glb'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+  if (validFiles.length === 0) {
+    showErrorState(files[0]?.name || '', new Error('.glb 파일만 지원합니다.'));
     return;
   }
-  const objectUrl = URL.createObjectURL(file);
-  loadGLB(objectUrl, { isObjectUrl: true, label: file.name });
+
+  const startIndex = state.playlist.length;
+  for (const file of validFiles) {
+    state.playlist.push({
+      id: state.nextPlaylistId++,
+      name: file.name,
+      sizeBytes: file.size,
+      file,
+    });
+  }
+
+  if (validFiles.length > 1 || state.playlist.length > 1) {
+    setPlaylistOpen(true);
+  }
+  selectPlaylistItem(startIndex);
+}
+
+function addExternalEntriesToPlaylist(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return;
+  const startIndex = state.playlist.length;
+  for (const entry of entries) {
+    state.playlist.push({
+      id: state.nextPlaylistId++,
+      name: entry.name,
+      sizeBytes: entry.sizeBytes || 0,
+      url: entry.url,
+    });
+  }
+  if (state.playlist.length > 1) {
+    setPlaylistOpen(true);
+  }
+  selectPlaylistItem(startIndex);
+}
+
+function selectPlaylistItem(index) {
+  if (index < 0 || index >= state.playlist.length) return;
+  state.activePlaylistIndex = index;
+  renderPlaylist();
+
+  const item = state.playlist[index];
+  if (item.file) {
+    const objectUrl = URL.createObjectURL(item.file);
+    loadGLB(objectUrl, { isObjectUrl: true, label: item.name });
+  } else if (item.url) {
+    loadGLB(item.url, { isObjectUrl: false, label: item.name });
+  }
+}
+
+function stepPlaylist(delta) {
+  const total = state.playlist.length;
+  if (total === 0) return;
+  const current = state.activePlaylistIndex >= 0 ? state.activePlaylistIndex : 0;
+  const nextIndex = (current + delta + total) % total;
+  selectPlaylistItem(nextIndex);
+}
+
+function removePlaylistItem(index) {
+  if (index < 0 || index >= state.playlist.length) return;
+  const wasActive = index === state.activePlaylistIndex;
+  state.playlist.splice(index, 1);
+
+  if (state.playlist.length === 0) {
+    state.activePlaylistIndex = -1;
+    clearCurrentModel();
+    renderPlaylist();
+    showWelcomeState();
+    return;
+  }
+
+  if (wasActive) {
+    const nextIndex = Math.min(index, state.playlist.length - 1);
+    selectPlaylistItem(nextIndex);
+  } else {
+    if (index < state.activePlaylistIndex) {
+      state.activePlaylistIndex -= 1;
+    }
+    renderPlaylist();
+  }
+}
+
+function clearPlaylist() {
+  state.playlist = [];
+  state.activePlaylistIndex = -1;
+  clearCurrentModel();
+  renderPlaylist();
+  showWelcomeState();
+}
+
+function renderPlaylist() {
+  const count = state.playlist.length;
+  const activePos = count > 0 && state.activePlaylistIndex >= 0 ? state.activePlaylistIndex + 1 : 0;
+
+  dom.playlistToggleBtn.textContent = `모델 목록 (${count})`;
+  dom.playlistTitle.textContent = `모델 목록 (${count})`;
+  dom.playlistCounter.textContent = `${activePos} / ${count}`;
+
+  const hasMultiple = count > 1;
+  const hasAny = count > 0;
+  dom.playlistClearBtn.disabled = !hasAny;
+  dom.prevModelBtn.disabled = !hasMultiple;
+  dom.nextModelBtn.disabled = !hasMultiple;
+  dom.toolbarPrevBtn.disabled = !hasMultiple;
+  dom.toolbarNextBtn.disabled = !hasMultiple;
+
+  dom.playlistItems.replaceChildren();
+  if (count === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'playlist-empty';
+    empty.innerHTML =
+      '여러 개의 .glb 파일을 선택하거나<br />화면에 드래그하면 하나씩 넘겨볼 수 있습니다.';
+    dom.playlistItems.appendChild(empty);
+    return;
+  }
+
+  state.playlist.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = `playlist-item${index === state.activePlaylistIndex ? ' is-active' : ''}`;
+    row.title = item.name;
+    row.addEventListener('click', () => selectPlaylistItem(index));
+
+    const idxEl = document.createElement('span');
+    idxEl.className = 'playlist-item-index';
+    idxEl.textContent = String(index + 1);
+
+    const infoEl = document.createElement('div');
+    infoEl.className = 'playlist-item-info';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'playlist-item-name';
+    nameEl.textContent = item.name;
+
+    const sizeEl = document.createElement('div');
+    sizeEl.className = 'playlist-item-size';
+    sizeEl.textContent = formatFileSize(item.sizeBytes);
+
+    infoEl.append(nameEl, sizeEl);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'playlist-item-remove';
+    removeBtn.textContent = '×';
+    removeBtn.setAttribute('aria-label', `${item.name} 목록에서 제거`);
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removePlaylistItem(index);
+    });
+
+    row.append(idxEl, infoEl, removeBtn);
+    dom.playlistItems.appendChild(row);
+  });
+}
+
+function setupDesktopIntegration() {
+  if (!window.desktopAPI) return;
+  window.desktopAPI.onOpenFiles((entries) => {
+    addExternalEntriesToPlaylist(entries);
+  });
+  window.desktopAPI.onTriggerOpenDialog(() => {
+    dom.fileInput.click();
+  });
 }
 
 function animate(timestamp) {
@@ -642,6 +866,23 @@ function setupSpectatorControls() {
 
     if (e.code === 'KeyR' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
       if (state.currentModel) fitCameraToModel(state.currentModel, { resetAngle: true });
+      return;
+    }
+
+    if (e.code === 'KeyL' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      setPlaylistOpen(!state.isPlaylistOpen);
+      return;
+    }
+
+    if ((e.code === 'BracketLeft' || e.code === 'PageUp') && !e.repeat) {
+      e.preventDefault();
+      stepPlaylist(-1);
+      return;
+    }
+
+    if ((e.code === 'BracketRight' || e.code === 'PageDown') && !e.repeat) {
+      e.preventDefault();
+      stepPlaylist(1);
       return;
     }
 

@@ -1,0 +1,40 @@
+{
+  "name": "glb-web-viewer",
+  "version": "1.0.0",
+  "description": "Blender .glb 3D model desktop & web viewer with Orbit and WASD Spectator modes",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win portable"
+  },
+  "dependencies": {
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "electron": "latest",
+    "electron-builder": "latest"
+  },
+  "build": {
+    "appId": "com.glass1131.glbwebviewer",
+    "productName": "GLB 3D Viewer",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "viewer.js",
+      "electron/**/*",
+      "node_modules/three/build/**/*",
+      "node_modules/three/examples/jsm/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "GLB-3D-Viewer-Portable.exe"
+    }
+  }
+}

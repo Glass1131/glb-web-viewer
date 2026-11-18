@@ -1,0 +1,24 @@
+{
+  "name": "GLB 3D Viewer",
+  "short_name": "GLB Viewer",
+  "description": "Blender .glb 3D 에셋 다중 업로드 및 1인칭 관전자(WASD) 뷰어",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14171e",
+  "theme_color": "#14171e",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
